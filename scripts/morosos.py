@@ -27,11 +27,10 @@ os.makedirs(WORK_DIR, exist_ok=True)
 # ── GOOGLE DRIVE AUTH ──────────────────────────────────────────────────────────
 def get_drive_service():
     b64_raw = os.environ['GOOGLE_CREDENTIALS_B64'].strip()
-padding = 4 - len(b64_raw) % 4
-if padding != 4:
-    b64_raw += '=' * padding
-creds_json = base64.b64decode(b64_raw).decode()
-
+    padding = 4 - len(b64_raw) % 4
+    if padding != 4:
+        b64_raw += '=' * padding
+    creds_json = base64.b64decode(b64_raw).decode()
     creds_dict = json.loads(creds_json)
     creds = Credentials.from_service_account_info(
         creds_dict,
