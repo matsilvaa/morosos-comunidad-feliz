@@ -33,5 +33,5 @@ jobs:
         env:
           CF_EMAIL: ${{ secrets.CF_EMAIL }}
           CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
-          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: python scripts/morosos.py
