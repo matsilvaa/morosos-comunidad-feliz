@@ -1,6 +1,6 @@
 """
 Extractor automatico de morosos - Comunidad Feliz
-Corre via GitHub Actions cada noche
+Corre via GitHub Actions cada noche 
 """
 import time, datetime, os, shutil, re, json, base64
 import pandas as pd
