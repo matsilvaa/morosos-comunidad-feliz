@@ -284,7 +284,12 @@ def analizar_morosos(archivos):
                 unidad = str(row.get(col_unidad, '')).strip()
                 if not unidad or unidad.lower() in ['nan','unidad','total','subtotal','']:
                     continue
-                deuda_por_meses = sum(limpiar_num(row.get(c, 0)) for c in cols_meses)
+               # Incluir deudas anteriores si existe esa columna
+                deuda_anteriores = 0
+                col_anteriores = next((c for c in df.columns if 'anterior' in c.lower()), None)
+                if col_anteriores:
+                deuda_anteriores = limpiar_num(row.get(col_anteriores, 0))
+                deuda_por_meses = deuda_anteriores + sum(limpiar_num(row.get(c, 0)) for c in cols_meses)
                 deuda_col_total = limpiar_num(row.get(col_total, 0)) if col_total else 0
                 deuda_total = max(deuda_por_meses, deuda_col_total)
                 if deuda_total <= 0:
