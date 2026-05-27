@@ -1,6 +1,6 @@
 """
 Extractor automatico de morosos - Comunidad Feliz
-Corre via GitHub Actions cada noche 
+Corre via GitHub Actions cada noche
 """
 import time, datetime, os, shutil, re, json, base64
 import pandas as pd
@@ -15,7 +15,7 @@ from googleapiclient.http import MediaFileUpload
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
-# ── CONFIGURACION ──────────────────────────────────────────────────────────────
+# CONFIGURACION
 EMAIL        = os.environ['CF_EMAIL']
 PASSWORD     = os.environ['CF_PASSWORD']
 FOLDER_ID    = '17vrvDsPfunupOoL6i2Mc-Xsv7IYl5wOS'
@@ -24,7 +24,7 @@ MESES_CORTE  = 3
 WORK_DIR     = '/tmp/morosos'
 os.makedirs(WORK_DIR, exist_ok=True)
 
-# ── GOOGLE DRIVE AUTH ──────────────────────────────────────────────────────────
+# GOOGLE DRIVE AUTH
 def get_drive_service():
     creds_json = os.environ['GOOGLE_CREDENTIALS_JSON']
     creds_dict = json.loads(creds_json)
@@ -35,26 +35,23 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def subir_a_drive(service, ruta_local, nombre_archivo, folder_id):
-    # Buscar si ya existe para reemplazarlo
     query = f"name='{nombre_archivo}' and '{folder_id}' in parents and trashed=false"
     results = service.files().list(q=query, fields='files(id,name)').execute()
     files = results.get('files', [])
-
     media = MediaFileUpload(ruta_local,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        resumable=True)
     if files:
-        # Actualizar archivo existente
         file_id = files[0]['id']
         service.files().update(fileId=file_id, media_body=media).execute()
         print(f'  Actualizado en Drive: {nombre_archivo}')
     else:
-        # Crear nuevo
         metadata = {'name': nombre_archivo, 'parents': [folder_id]}
-        service.files().create(body=metadata, media_body=media).execute()
+        service.files().create(body=metadata, media_body=media,
+                               supportsAllDrives=True).execute()
         print(f'  Subido a Drive: {nombre_archivo}')
 
-# ── SELENIUM CHROME ────────────────────────────────────────────────────────────
+# SELENIUM CHROME
 def iniciar_chrome():
     options = webdriver.ChromeOptions()
     options.add_argument('--headless')
@@ -77,11 +74,13 @@ def click(driver, el):
     driver.execute_script('arguments[0].scrollIntoView(true);', el)
     driver.execute_script('arguments[0].click();', el)
 
-def limpiar_xlsx():
+def limpiar_crdownload():
     for f in os.listdir(WORK_DIR):
-        if f.endswith(('.xlsx', '.crdownload')):
-            try: os.remove(os.path.join(WORK_DIR, f))
-            except: pass
+        if f.endswith('.crdownload'):
+            try:
+                os.remove(os.path.join(WORK_DIR, f))
+            except:
+                pass
 
 def esperar_xlsx(timeout=60):
     for _ in range(timeout):
@@ -92,14 +91,21 @@ def esperar_xlsx(timeout=60):
         time.sleep(1)
     return None
 
-# ── DESCARGA DE MOROSOS ────────────────────────────────────────────────────────
+def limpiar_xlsx_sin_nombre():
+    for f in os.listdir(WORK_DIR):
+        if f.endswith('.xlsx') and not f.startswith(FECHA_ACTUAL):
+            try:
+                os.remove(os.path.join(WORK_DIR, f))
+            except:
+                pass
+
+# DESCARGA DE MOROSOS
 def descargar_morosos():
     driver = iniciar_chrome()
     wait   = WebDriverWait(driver, 30)
     archivos_descargados = []
 
     try:
-        # Login
         print('Iniciando sesion...')
         driver.get('https://app.comunidadfeliz.com')
         wait.until(EC.presence_of_element_located((By.NAME, 'email'))).send_keys(EMAIL)
@@ -108,7 +114,6 @@ def descargar_morosos():
         time.sleep(8)
         print(f'Login OK: {driver.current_url}')
 
-        # Descubrir edificios
         driver.get('https://app.comunidadfeliz.com/mis_comunidades')
         time.sleep(8)
         for _ in range(15):
@@ -138,7 +143,9 @@ def descargar_morosos():
             nombre = edificio['nombre']
             print(f'\nProcesando: {nombre}')
             try:
-                limpiar_xlsx()
+                # Solo limpiar archivos temporales incompletos
+                limpiar_crdownload()
+
                 driver.get(edificio['href'])
                 time.sleep(6)
                 driver.get('https://app.comunidadfeliz.com/boletas/morosity')
@@ -171,6 +178,7 @@ def descargar_morosos():
                 print(f'  {resultado}')
                 time.sleep(3)
 
+                # Esperar que se descargue y renombrar
                 archivo = esperar_xlsx(60)
                 if archivo:
                     nombre_limpio = re.sub(r'[<>:"/\\|?*]', '', nombre).strip()
@@ -178,7 +186,11 @@ def descargar_morosos():
                     destino       = os.path.join(WORK_DIR, nombre_final)
                     shutil.copy2(archivo, destino)
                     os.remove(archivo)
-                    archivos_descargados.append({'nombre': nombre, 'ruta': destino, 'archivo': nombre_final})
+                    archivos_descargados.append({
+                        'nombre': nombre,
+                        'ruta': destino,
+                        'archivo': nombre_final
+                    })
                     print(f'  Descargado: {nombre_final}')
                 else:
                     print('  Sin descarga')
@@ -191,7 +203,7 @@ def descargar_morosos():
 
     return archivos_descargados
 
-# ── ANALISIS DE MOROSOS ────────────────────────────────────────────────────────
+# ANALISIS DE MOROSOS
 def analizar_morosos(archivos):
     meses_re = re.compile(
         r'(enero|febrero|marzo|abril|mayo|junio|julio|agosto|'
@@ -211,6 +223,10 @@ def analizar_morosos(archivos):
         ruta     = item['ruta']
         print(f'\nAnalizando: {edificio}')
         try:
+            if not os.path.exists(ruta):
+                print(f'  Archivo no encontrado: {ruta}')
+                continue
+
             xls  = pd.ExcelFile(ruta)
             hoja = next((h for h in xls.sheet_names if 'unidad' in h.lower()), xls.sheet_names[0])
 
@@ -228,6 +244,7 @@ def analizar_morosos(archivos):
                         fila_header = i
                         break
             if fila_header is None:
+                print('  No se encontro fila de encabezados')
                 continue
 
             df = pd.read_excel(xls, sheet_name=hoja, header=fila_header)
@@ -243,10 +260,12 @@ def analizar_morosos(archivos):
             if not col_total:
                 col_total = next((c for c in df.columns if 'total' in c.lower()), None)
             if not col_unidad:
+                print('  No se encontro columna Unidad')
                 continue
 
             idx_total  = df.columns.tolist().index(col_total) if col_total else len(df.columns)
-            cols_meses = [c for c in df.columns.tolist()[:idx_total] if meses_re.search(str(c))]
+            cols_meses = [c for c in df.columns.tolist()[:idx_total]
+                          if meses_re.search(str(c))]
 
             for _, row in df.iterrows():
                 unidad = str(row.get(col_unidad, '')).strip()
@@ -282,7 +301,7 @@ def analizar_morosos(archivos):
 
     return todos
 
-# ── GENERAR EXCEL REPORTE ──────────────────────────────────────────────────────
+# GENERAR EXCEL REPORTE
 def generar_reporte(todos):
     if not todos:
         print('Sin morosos')
@@ -327,11 +346,10 @@ def generar_reporte(todos):
     print(res.to_string(index=False))
     return ruta_rep, nombre_archivo
 
-# ── MAIN ───────────────────────────────────────────────────────────────────────
+# MAIN
 if __name__ == '__main__':
     print(f'Iniciando proceso: {datetime.datetime.now()}')
 
-    # 1. Descargar Excel de cada edificio
     archivos = descargar_morosos()
     print(f'\n{len(archivos)} archivos descargados')
 
@@ -339,22 +357,18 @@ if __name__ == '__main__':
         print('Sin archivos para analizar')
         exit(0)
 
-    # 2. Analizar morosos
     todos = analizar_morosos(archivos)
     print(f'\nTotal morosos +3 meses: {len(todos)}')
 
-    # 3. Generar reporte
     resultado = generar_reporte(todos)
     if not resultado:
         exit(0)
     ruta_rep, nombre_archivo = resultado
 
-    # 4. Subir a Google Drive
     print('\nSubiendo a Google Drive...')
     service = get_drive_service()
     subir_a_drive(service, ruta_rep, nombre_archivo, FOLDER_ID)
 
-    # Subir tambien los Excel individuales de cada edificio
     for item in archivos:
         subir_a_drive(service, item['ruta'], item['archivo'], FOLDER_ID)
 
