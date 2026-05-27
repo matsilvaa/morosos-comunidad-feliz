@@ -84,6 +84,17 @@ def esperar_xlsx(timeout=60):
         time.sleep(1)
     return None
 
+def nombre_a_ascii(nombre):
+    reemplazos = {
+        'á':'a','é':'e','í':'i','ó':'o','ú':'u',
+        'Á':'A','É':'E','Í':'I','Ó':'O','Ú':'U',
+        'ñ':'n','Ñ':'N','ü':'u','Ü':'U'
+    }
+    for k, v in reemplazos.items():
+        nombre = nombre.replace(k, v)
+    nombre = re.sub(r'[<>:"/\\|?*]', '', nombre)
+    return nombre.strip()
+
 # DESCARGA DE MOROSOS
 def descargar_morosos():
     driver = iniciar_chrome()
@@ -163,19 +174,19 @@ def descargar_morosos():
 
                 archivo = esperar_xlsx(60)
                 if archivo:
-                    # Nombre sin caracteres especiales ni acentos
-                    nombre_limpio = nombre.encode('ascii', 'ignore').decode('ascii')
-                    nombre_limpio = re.sub(r'[<>:"/\\|?*]', '', nombre_limpio).strip()
+                    nombre_limpio = nombre_a_ascii(nombre)
                     nombre_final  = f'{FECHA_ACTUAL}_{nombre_limpio}.xlsx'
                     destino       = os.path.join(WORK_DIR, nombre_final)
                     shutil.copy2(archivo, destino)
                     os.remove(archivo)
+                    existe = os.path.exists(destino)
+                    print(f'  Guardado: {nombre_final} | existe={existe}')
                     archivos_descargados.append({
                         'nombre': nombre,
+                        'nombre_limpio': nombre_limpio,
                         'ruta': destino,
                         'archivo': nombre_final
                     })
-                    print(f'  Descargado: {nombre_final}')
                 else:
                     print('  Sin descarga')
 
@@ -206,15 +217,23 @@ def analizar_morosos(archivos):
         edificio = item['nombre']
         ruta     = item['ruta']
         print(f'\nAnalizando: {edificio}')
-        try:
-            if not os.path.exists(ruta):
-                print(f'  Archivo no encontrado: {ruta}')
+
+        if not os.path.exists(ruta):
+            # Intentar buscar el archivo en WORK_DIR por si el nombre cambio
+            print(f'  Archivo no encontrado en ruta esperada, buscando...')
+            candidatos = [f for f in os.listdir(WORK_DIR)
+                         if item['nombre_limpio'][:10] in f and f.endswith('.xlsx')]
+            if candidatos:
+                ruta = os.path.join(WORK_DIR, candidatos[0])
+                print(f'  Encontrado: {candidatos[0]}')
+            else:
+                print(f'  No encontrado. Archivos disponibles: {os.listdir(WORK_DIR)}')
                 continue
 
+        try:
             xls  = pd.ExcelFile(ruta)
             hoja = next((h for h in xls.sheet_names if 'unidad' in h.lower()), xls.sheet_names[0])
 
-            # Encontrar fila de encabezados dinamicamente
             df_raw = pd.read_excel(xls, sheet_name=hoja, header=None)
             fila_header = None
             for i, row in df_raw.iterrows():
@@ -238,20 +257,18 @@ def analizar_morosos(archivos):
             df = df.loc[:, ~df.columns.str.lower().isin(['nan','none',''])]
             df = df.dropna(how='all')
 
-            # Identificar columnas por titulo
-            col_unidad    = next((c for c in df.columns if 'unidad' in c.lower()), None)
-            col_residente = next((c for c in df.columns if 'residente' in c.lower()), None)
-            col_total     = next((c for c in df.columns
-                                  if 'total' in c.lower() and 'deuda' in c.lower()), None)
+            col_unidad     = next((c for c in df.columns if 'unidad' in c.lower()), None)
+            col_residente  = next((c for c in df.columns if 'residente' in c.lower()), None)
+            col_total      = next((c for c in df.columns
+                                   if 'total' in c.lower() and 'deuda' in c.lower()), None)
             if not col_total:
-                col_total = next((c for c in df.columns if 'total' in c.lower()), None)
+                col_total  = next((c for c in df.columns if 'total' in c.lower()), None)
             col_anteriores = next((c for c in df.columns if 'anterior' in c.lower()), None)
 
             if not col_unidad:
                 print('  No se encontro columna Unidad')
                 continue
 
-            # Columnas de meses: solo las que estan ANTES de Total y tienen nombre de mes
             idx_total  = df.columns.tolist().index(col_total) if col_total else len(df.columns)
             cols_meses = [c for c in df.columns.tolist()[:idx_total]
                           if meses_re.search(str(c))]
@@ -261,7 +278,6 @@ def analizar_morosos(archivos):
                 if not unidad or unidad.lower() in ['nan','unidad','total','subtotal','']:
                     continue
 
-                # Sumar deudas anteriores + todos los meses
                 deuda_anteriores = limpiar_num(row.get(col_anteriores, 0)) if col_anteriores else 0
                 deuda_por_meses  = sum(limpiar_num(row.get(c, 0)) for c in cols_meses)
                 deuda_col_total  = limpiar_num(row.get(col_total, 0)) if col_total else 0
@@ -270,21 +286,20 @@ def analizar_morosos(archivos):
                 if deuda_total <= 0:
                     continue
 
-                # Contar meses con saldo > 0
                 meses_con_deuda = [c for c in cols_meses if limpiar_num(row.get(c, 0)) > 0]
                 n_meses = len(meses_con_deuda)
                 if deuda_anteriores > 0:
-                    n_meses += 1  # Contar deudas anteriores como al menos 1 mes adicional
+                    n_meses += 1
 
                 residente = str(row.get(col_residente, 'S/I')).strip() if col_residente else 'S/I'
 
                 if n_meses > MESES_CORTE:
                     fila = {
-                        'Edificio':          edificio,
-                        'Unidad':            unidad,
-                        'Residente':         residente,
-                        'Deuda Total ($)':   deuda_total,
-                        'Meses en Deuda':    n_meses,
+                        'Edificio':        edificio,
+                        'Unidad':          unidad,
+                        'Residente':       residente,
+                        'Deuda Total ($)': deuda_total,
+                        'Meses en Deuda':  n_meses,
                     }
                     if deuda_anteriores > 0:
                         fila['Deudas anteriores'] = deuda_anteriores
@@ -353,6 +368,7 @@ if __name__ == '__main__':
 
     archivos = descargar_morosos()
     print(f'\n{len(archivos)} archivos descargados')
+    print(f'Archivos en disco: {os.listdir(WORK_DIR)}')
 
     if not archivos:
         print('Sin archivos para analizar')
