@@ -381,7 +381,4 @@ if __name__ == '__main__':
     service = get_drive_service()
     subir_a_drive(service, ruta_rep, nombre_archivo, FOLDER_ID)
 
-    for item in archivos:
-        subir_a_drive(service, item['ruta'], item['archivo'], FOLDER_ID)
-
     print(f'\nProceso completado: {datetime.datetime.now()}')
