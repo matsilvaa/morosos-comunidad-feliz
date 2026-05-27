@@ -35,21 +35,33 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def subir_a_drive(service, ruta_local, nombre_archivo, folder_id):
-    query = f"name='{nombre_archivo}' and '{folder_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields='files(id,name)').execute()
-    files = results.get('files', [])
+    # ID fijo del reporte principal que ya existe en Drive
+    REPORTE_FILE_ID = '1WHP32-gkVLhJ1g3VgWyeLLKSQbo0MMEp'
+
     media = MediaFileUpload(ruta_local,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        resumable=True)
-    if files:
-        file_id = files[0]['id']
-        service.files().update(fileId=file_id, media_body=media).execute()
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    if 'REPORTE_MOROSOS' in nombre_archivo:
+        # Siempre actualizar el archivo existente (nunca crear nuevo)
+        service.files().update(
+            fileId=REPORTE_FILE_ID,
+            body={'name': nombre_archivo},
+            media_body=media
+        ).execute()
         print(f'  Actualizado en Drive: {nombre_archivo}')
     else:
-        metadata = {'name': nombre_archivo, 'parents': [folder_id]}
-        service.files().create(body=metadata, media_body=media,
-                               supportsAllDrives=True).execute()
-        print(f'  Subido a Drive: {nombre_archivo}')
+        # Para los Excel individuales, buscar si existe y actualizar
+        query = f"name='{nombre_archivo}' and '{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields='files(id,name)').execute()
+        files = results.get('files', [])
+        if files:
+            service.files().update(
+                fileId=files[0]['id'],
+                media_body=media
+            ).execute()
+            print(f'  Actualizado: {nombre_archivo}')
+        else:
+            print(f'  Omitido (no existe en Drive): {nombre_archivo}')
 
 # SELENIUM CHROME
 def iniciar_chrome():
