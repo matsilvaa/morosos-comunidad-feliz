@@ -193,7 +193,8 @@ def descargar_morosos():
                 # Esperar que se descargue y renombrar
                 archivo = esperar_xlsx(60)
                 if archivo:
-                    nombre_limpio = re.sub(r'[<>:"/\\|?*]', '', nombre).strip()
+                    nombre_limpio = re.sub(r'[<>:"/\\|?*\xe9\xed\xf3\xfa\xf1]', '', nombre)
+                    nombre_limpio = nombre_limpio.encode('ascii', 'ignore').decode('ascii').strip()
                     nombre_final  = f'{FECHA_ACTUAL}_{nombre_limpio}.xlsx'
                     destino       = os.path.join(WORK_DIR, nombre_final)
                     shutil.copy2(archivo, destino)
