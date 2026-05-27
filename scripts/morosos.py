@@ -2,10 +2,9 @@
 Extractor automatico de morosos - Comunidad Feliz
 Corre via GitHub Actions cada noche
 """
-import time, datetime, os, shutil, re, json, base64
+import time, datetime, os, shutil, re, json
 import pandas as pd
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -19,6 +18,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 EMAIL        = os.environ['CF_EMAIL']
 PASSWORD     = os.environ['CF_PASSWORD']
 FOLDER_ID    = '17vrvDsPfunupOoL6i2Mc-Xsv7IYl5wOS'
+REPORTE_FILE_ID = '1WHP32-gkVLhJ1g3VgWyeLLKSQbo0MMEp'
 FECHA_ACTUAL = datetime.datetime.now().strftime('%Y-%m')
 MESES_CORTE  = 3
 WORK_DIR     = '/tmp/morosos'
@@ -34,34 +34,15 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-def subir_a_drive(service, ruta_local, nombre_archivo, folder_id):
-    # ID fijo del reporte principal que ya existe en Drive
-    REPORTE_FILE_ID = '1WHP32-gkVLhJ1g3VgWyeLLKSQbo0MMEp'
-
+def subir_reporte(service, ruta_local, nombre_archivo):
     media = MediaFileUpload(ruta_local,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-
-    if 'REPORTE_MOROSOS' in nombre_archivo:
-        # Siempre actualizar el archivo existente (nunca crear nuevo)
-        service.files().update(
-            fileId=REPORTE_FILE_ID,
-            body={'name': nombre_archivo},
-            media_body=media
-        ).execute()
-        print(f'  Actualizado en Drive: {nombre_archivo}')
-    else:
-        # Para los Excel individuales, buscar si existe y actualizar
-        query = f"name='{nombre_archivo}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields='files(id,name)').execute()
-        files = results.get('files', [])
-        if files:
-            service.files().update(
-                fileId=files[0]['id'],
-                media_body=media
-            ).execute()
-            print(f'  Actualizado: {nombre_archivo}')
-        else:
-            print(f'  Omitido (no existe en Drive): {nombre_archivo}')
+    service.files().update(
+        fileId=REPORTE_FILE_ID,
+        body={'name': nombre_archivo},
+        media_body=media
+    ).execute()
+    print(f'  Actualizado en Drive: {nombre_archivo}')
 
 # SELENIUM CHROME
 def iniciar_chrome():
@@ -102,14 +83,6 @@ def esperar_xlsx(timeout=60):
             return max([os.path.join(WORK_DIR, f) for f in files], key=os.path.getctime)
         time.sleep(1)
     return None
-
-def limpiar_xlsx_sin_nombre():
-    for f in os.listdir(WORK_DIR):
-        if f.endswith('.xlsx') and not f.startswith(FECHA_ACTUAL):
-            try:
-                os.remove(os.path.join(WORK_DIR, f))
-            except:
-                pass
 
 # DESCARGA DE MOROSOS
 def descargar_morosos():
@@ -155,9 +128,7 @@ def descargar_morosos():
             nombre = edificio['nombre']
             print(f'\nProcesando: {nombre}')
             try:
-                # Solo limpiar archivos temporales incompletos
                 limpiar_crdownload()
-
                 driver.get(edificio['href'])
                 time.sleep(6)
                 driver.get('https://app.comunidadfeliz.com/boletas/morosity')
@@ -190,11 +161,11 @@ def descargar_morosos():
                 print(f'  {resultado}')
                 time.sleep(3)
 
-                # Esperar que se descargue y renombrar
                 archivo = esperar_xlsx(60)
                 if archivo:
-                    nombre_limpio = re.sub(r'[<>:"/\\|?*\xe9\xed\xf3\xfa\xf1]', '', nombre)
-                    nombre_limpio = nombre_limpio.encode('ascii', 'ignore').decode('ascii').strip()
+                    # Nombre sin caracteres especiales ni acentos
+                    nombre_limpio = nombre.encode('ascii', 'ignore').decode('ascii')
+                    nombre_limpio = re.sub(r'[<>:"/\\|?*]', '', nombre_limpio).strip()
                     nombre_final  = f'{FECHA_ACTUAL}_{nombre_limpio}.xlsx'
                     destino       = os.path.join(WORK_DIR, nombre_final)
                     shutil.copy2(archivo, destino)
@@ -243,6 +214,7 @@ def analizar_morosos(archivos):
             xls  = pd.ExcelFile(ruta)
             hoja = next((h for h in xls.sheet_names if 'unidad' in h.lower()), xls.sheet_names[0])
 
+            # Encontrar fila de encabezados dinamicamente
             df_raw = pd.read_excel(xls, sheet_name=hoja, header=None)
             fila_header = None
             for i, row in df_raw.iterrows():
@@ -266,16 +238,20 @@ def analizar_morosos(archivos):
             df = df.loc[:, ~df.columns.str.lower().isin(['nan','none',''])]
             df = df.dropna(how='all')
 
+            # Identificar columnas por titulo
             col_unidad    = next((c for c in df.columns if 'unidad' in c.lower()), None)
             col_residente = next((c for c in df.columns if 'residente' in c.lower()), None)
             col_total     = next((c for c in df.columns
                                   if 'total' in c.lower() and 'deuda' in c.lower()), None)
             if not col_total:
                 col_total = next((c for c in df.columns if 'total' in c.lower()), None)
+            col_anteriores = next((c for c in df.columns if 'anterior' in c.lower()), None)
+
             if not col_unidad:
                 print('  No se encontro columna Unidad')
                 continue
 
+            # Columnas de meses: solo las que estan ANTES de Total y tienen nombre de mes
             idx_total  = df.columns.tolist().index(col_total) if col_total else len(df.columns)
             cols_meses = [c for c in df.columns.tolist()[:idx_total]
                           if meses_re.search(str(c))]
@@ -284,27 +260,34 @@ def analizar_morosos(archivos):
                 unidad = str(row.get(col_unidad, '')).strip()
                 if not unidad or unidad.lower() in ['nan','unidad','total','subtotal','']:
                     continue
-               # Incluir deudas anteriores si existe esa columna
-                deuda_anteriores = 0
-                col_anteriores = next((c for c in df.columns if 'anterior' in c.lower()), None)
-                if col_anteriores:
-                deuda_anteriores = limpiar_num(row.get(col_anteriores, 0))
-                deuda_por_meses = deuda_anteriores + sum(limpiar_num(row.get(c, 0)) for c in cols_meses)
-                deuda_col_total = limpiar_num(row.get(col_total, 0)) if col_total else 0
-                deuda_total = max(deuda_por_meses, deuda_col_total)
+
+                # Sumar deudas anteriores + todos los meses
+                deuda_anteriores = limpiar_num(row.get(col_anteriores, 0)) if col_anteriores else 0
+                deuda_por_meses  = sum(limpiar_num(row.get(c, 0)) for c in cols_meses)
+                deuda_col_total  = limpiar_num(row.get(col_total, 0)) if col_total else 0
+                deuda_total = max(deuda_anteriores + deuda_por_meses, deuda_col_total)
+
                 if deuda_total <= 0:
                     continue
+
+                # Contar meses con saldo > 0
                 meses_con_deuda = [c for c in cols_meses if limpiar_num(row.get(c, 0)) > 0]
                 n_meses = len(meses_con_deuda)
+                if deuda_anteriores > 0:
+                    n_meses += 1  # Contar deudas anteriores como al menos 1 mes adicional
+
                 residente = str(row.get(col_residente, 'S/I')).strip() if col_residente else 'S/I'
+
                 if n_meses > MESES_CORTE:
                     fila = {
-                        'Edificio':        edificio,
-                        'Unidad':          unidad,
-                        'Residente':       residente,
-                        'Deuda Total ($)': deuda_total,
-                        'Meses en Deuda':  n_meses,
+                        'Edificio':          edificio,
+                        'Unidad':            unidad,
+                        'Residente':         residente,
+                        'Deuda Total ($)':   deuda_total,
+                        'Meses en Deuda':    n_meses,
                     }
+                    if deuda_anteriores > 0:
+                        fila['Deudas anteriores'] = deuda_anteriores
                     for cm in cols_meses:
                         v = limpiar_num(row.get(cm, 0))
                         if v > 0:
@@ -385,6 +368,6 @@ if __name__ == '__main__':
 
     print('\nSubiendo a Google Drive...')
     service = get_drive_service()
-    subir_a_drive(service, ruta_rep, nombre_archivo, FOLDER_ID)
+    subir_reporte(service, ruta_rep, nombre_archivo)
 
     print(f'\nProceso completado: {datetime.datetime.now()}')
